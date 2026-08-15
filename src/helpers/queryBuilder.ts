@@ -189,6 +189,7 @@ const DEFAULT_OPERATORS_BY_TYPE: Record<
   "boolean[]": ARRAY_OPERATORS,
 };
 
+type FindManyArgs = Prisma.UserFindManyArgs;
 
 type ModelDelegate = {
   findMany: (args?: unknown) => Promise<unknown[]>;
