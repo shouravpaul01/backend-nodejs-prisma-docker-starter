@@ -1,153 +1,213 @@
-// Query Builder in Prisma
-import { PrismaClient } from "@prisma/client";
+// Query Builder for Prisma (MongoDB provider)
+// Senior-level hardened version: safe operator parsing, field whitelisting,
+// capped pagination, conflict-free `where` merging, and no leftover debug logs.
 
-class QueryBuilder {
-  private model: any;
+type PrismaOperator =
+  | "equals"
+  | "not"
+  | "in"
+  | "notIn"
+  | "lt"
+  | "lte"
+  | "gt"
+  | "gte"
+  | "contains"
+  | "startsWith"
+  | "endsWith";
+
+const ALLOWED_OPERATORS: ReadonlySet<string> = new Set([
+  "equals",
+  "not",
+  "in",
+  "notIn",
+  "lt",
+  "lte",
+  "gt",
+  "gte",
+  "contains",
+  "startsWith",
+  "endsWith",
+]);
+
+const DEFAULT_EXCLUDED_FIELDS = ["searchTerm", "sort", "limit", "page", "fields"];
+const MAX_LIMIT = 100; // hard cap to prevent unbounded/expensive queries
+const DEFAULT_LIMIT = 10;
+
+interface QueryBuilderOptions {
+  /** Only these fields may be used for filter()/search(). If omitted, filtering is unrestricted (not recommended for public APIs). */
+  allowedFilterFields?: string[];
+  /** Override the max page size. Defaults to 100. */
+  maxLimit?: number;
+}
+
+/**
+ * Attempts to coerce a raw query-string value into the correct JS type
+ * (number -> boolean -> Date -> string), since everything arrives as a string.
+ */
+function coerceValue(raw: string): unknown {
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+
+  // Numeric (handles ints and floats, but not empty string / NaN-prone input)
+  if (raw.trim() !== "" && !Number.isNaN(Number(raw))) {
+    return Number(raw);
+  }
+
+  // ISO date detection (basic, safe check before trusting Date parsing)
+  if (/^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d+)?Z?)?$/.test(raw)) {
+    const d = new Date(raw);
+    if (!Number.isNaN(d.getTime())) return d;
+  }
+
+  return raw;
+}
+
+class QueryBuilder<T = any> {
+  private model: {
+    findMany: (args: any) => Promise<any[]>;
+    count: (args: any) => Promise<number>;
+  };
   private query: Record<string, unknown>;
-  private prismaQuery: any = {}; // Define as any for flexibility
+  private prismaQuery: Record<string, any> = {};
+  private whereConditions: any[] = []; // combined with AND to avoid key-collision overwrites
+  private allowedFilterFields?: Set<string>;
+  private maxLimit: number;
 
-  constructor(model: any, query: Record<string, unknown>) {
-    this.model = model; // Prisma model instance
-    this.query = query; // Query params
+  constructor(
+    model: QueryBuilder<T>["model"],
+    query: Record<string, unknown>,
+    options: QueryBuilderOptions = {}
+  ) {
+    this.model = model;
+    this.query = query;
+    this.allowedFilterFields = options.allowedFilterFields
+      ? new Set(options.allowedFilterFields)
+      : undefined;
+    this.maxLimit = options.maxLimit ?? MAX_LIMIT;
   }
-  // Search
-  // search(searchableFields: any[]) {
-  //   const searchTerm = this.query.searchTerm as string;
-  //   if (searchTerm) {
-  //     this.prismaQuery.where = {
-  //       ...this.prismaQuery.where,
-  //       OR: searchableFields.map((field) => ({
-  //         [field]: {
-  //           contains: searchTerm,
-  //           mode: "insensitive",
-  //         },
-  //       })),
-  //     };
-  //   }
-  //   return this;
-  // }
 
-  search(searchableFields: any[]) {
-    const searchTerm = this.query.searchTerm as string;
+  private isFieldAllowed(field: string): boolean {
+    if (!this.allowedFilterFields) return true; // no whitelist configured
+    const topLevel = field.split(".")[0];
+    return this.allowedFilterFields.has(field) || this.allowedFilterFields.has(topLevel);
+  }
 
-    if (searchTerm) {
-      const orConditions = searchableFields.map((field) => {
-        // Handle nested fields like 'serviceAddress.city' or 'supplierSwitch.supplierName'
-        if (field.includes(".")) {
-          const [relation, nestedField] = field.split(".");
-          return {
-            [relation]: {
-              is: {
-                [nestedField]: {
-                  contains: searchTerm,
-                  mode: "insensitive",
-                },
-              },
-            },
-          };
+  /** Full-text-ish search (case-insensitive contains) across given fields, supporting infinitely nested relation fields (e.g., "user.profile.address.city"). */
+  search(searchableFields: string[]) {
+    const searchTerm = this.query.searchTerm;
+    if (typeof searchTerm !== "string" || searchTerm.trim() === "") return this;
+
+    const fields = searchableFields.filter((f) => this.isFieldAllowed(f));
+    if (fields.length === 0) return this;
+
+    const orConditions = fields.map((field) => {
+      const keys = field.split(".");
+      
+      const buildNestedCondition = (keysList: string[], value: string): any => {
+        if (keysList.length === 1) {
+          return { [keysList[0]]: { contains: value, mode: "insensitive" } };
         }
-
-        // Normal flat field
-        return {
-          [field]: {
-            contains: searchTerm,
-            mode: "insensitive",
-          },
-        };
-      });
-
-      this.prismaQuery.where = {
-        ...this.prismaQuery.where,
-        OR: orConditions,
+        const [currentKey, ...restKeys] = keysList;
+        return { [currentKey]: { is: buildNestedCondition(restKeys, value) } };
       };
-    }
 
-    return this;
-  }
-
-  // Filter
-  filter() {
-    const queryObj = { ...this.query };
-    const excludeFields = ["searchTerm", "sort", "limit", "page", "fields"];
-    excludeFields.forEach((field) => delete queryObj[field]);
-
-    const formattedFilters: Record<string, any> = {};
-    for (const [key, value] of Object.entries(queryObj)) {
-      if (typeof value === "string" && value.includes("[")) {
-        const [field, operator] = key.split("[");
-        const op = operator.slice(0, -1); // Remove the closing ']'
-        formattedFilters[field] = { [`${op}`]: parseFloat(value as string) };
-      } else {
-        formattedFilters[key] = value;
-      }
-    }
-
-    this.prismaQuery.where = {
-      ...this.prismaQuery.where,
-      ...formattedFilters,
-    };
-
-    return this;
-  }
-
-  //raw filter
-  rawFilter(filters: Record<string, any>) {
-    // Ensure that the filters are merged correctly with the existing where conditions
-    this.prismaQuery.where = {
-      ...this.prismaQuery.where,
-      ...filters,
-    };
-    console.log(this.prismaQuery.where);
-    return this;
-  }
-
-  // Sorting
-  // sort() {
-  //   const sort = (this.query.sort as string)?.split(',') || ['-createdAt'];
-  //   const orderBy = sort.map((field) => {
-  //     if (field.startsWith('-')) {
-  //       return { [field.slice(1)]: 'desc' };
-  //     }
-  //     return { [field]: 'asc' };
-  //   });
-
-  //   this.prismaQuery.orderBy = orderBy;
-  //   return this;
-  // }
-
-  sort() {
-    const sort = (this.query.sort as string)?.split(",") || ["-createdAt"];
-    const orderBy = sort.map((field) => {
-      if (field.startsWith("-")) {
-        const nestedFields = field.slice(1).split(".");
-        if (nestedFields.length > 1) {
-          return {
-            [nestedFields[0]]: {
-              [nestedFields[1]]: "desc",
-            },
-          };
-        }
-        return { [field.slice(1)]: "desc" };
-      }
-      const nestedFields = field.split(".");
-      if (nestedFields.length > 1) {
-        return {
-          [nestedFields[0]]: {
-            [nestedFields[1]]: "asc",
-          },
-        };
-      }
-      return { [field]: "asc" };
+      return buildNestedCondition(keys, searchTerm);
     });
 
-    this.prismaQuery.orderBy = orderBy;
+    this.whereConditions.push({ OR: orConditions });
     return this;
   }
 
-  // Pagination
+  /**
+   * Filter based on query params. Supports operator syntax like:
+   *   price[gte]=100, status[in]=ACTIVE,PENDING, createdAt[lte]=2024-01-01
+   * Values are type-coerced (number/boolean/date/string) instead of blindly parseFloat'd.
+   */
+  filter() {
+    const queryObj = { ...this.query };
+    DEFAULT_EXCLUDED_FIELDS.forEach((field) => delete queryObj[field]);
+
+    for (const [key, rawValue] of Object.entries(queryObj)) {
+      if (rawValue === undefined || rawValue === null) continue;
+
+      let field = key;
+      let operator: string | null = null;
+
+      const bracketMatch = key.match(/^([^[]+)\[([^\]]+)\]$/);
+      if (bracketMatch) {
+        field = bracketMatch[1];
+        operator = bracketMatch[2];
+      }
+
+      if (!this.isFieldAllowed(field)) continue; // silently drop disallowed fields
+
+      if (operator) {
+        if (!ALLOWED_OPERATORS.has(operator)) continue; // ignore unknown/unsafe operators
+
+        if (operator === "in" || operator === "notIn") {
+          const values = String(rawValue)
+            .split(",")
+            .map((v) => coerceValue(v.trim()));
+          this.whereConditions.push({ [field]: { [operator as PrismaOperator]: values } });
+        } else {
+          this.whereConditions.push({
+            [field]: { [operator as PrismaOperator]: coerceValue(String(rawValue)) },
+          });
+        }
+      } else {
+        this.whereConditions.push({ [field]: coerceValue(String(rawValue)) });
+      }
+    }
+
+    return this;
+  }
+
+  /**
+   * Escape hatch for filters constructed programmatically (e.g. by the controller/service layer),
+   * bypassing field whitelisting since the caller is trusted server-side code, not raw user input.
+   */
+  rawFilter(filters: Record<string, any>) {
+    if (filters && Object.keys(filters).length > 0) {
+      this.whereConditions.push(filters);
+    }
+    return this;
+  }
+
+  /**
+   * Sorting. Note: on MongoDB, Prisma only supports orderBy on nested relations
+   * for one-to-one relations, not one-to-many.
+   * Supports infinitely nested sorting (e.g., "-user.profile.age").
+   */
+  sort() {
+    const sortParam = (this.query.sort as string) || "-createdAt";
+    const sortFields = sortParam.split(",").filter(Boolean);
+
+    this.prismaQuery.orderBy = sortFields.map((field) => {
+      const desc = field.startsWith("-");
+      const cleanField = desc ? field.slice(1) : field;
+      const direction = desc ? "desc" : "asc";
+
+      const keys = cleanField.split(".");
+      
+      const buildNestedOrderBy = (keysList: string[], dir: string): any => {
+        if (keysList.length === 1) {
+          return { [keysList[0]]: dir };
+        }
+        const [currentKey, ...restKeys] = keysList;
+        return { [currentKey]: buildNestedOrderBy(restKeys, dir) };
+      };
+
+      return buildNestedOrderBy(keys, direction);
+    });
+
+    return this;
+  }
+
+  /** Pagination, with limit capped to prevent unbounded/expensive queries. */
   paginate() {
-    const page = Number(this.query.page) || 1;
-    const limit = Number(this.query.limit) || 10;
+    const page = Math.max(1, Number(this.query.page) || 1);
+    const requestedLimit = Number(this.query.limit) || DEFAULT_LIMIT;
+    const limit = Math.min(Math.max(1, requestedLimit), this.maxLimit);
     const skip = (page - 1) * limit;
 
     this.prismaQuery.skip = skip;
@@ -156,23 +216,39 @@ class QueryBuilder {
     return this;
   }
 
-  // Fields Selection
+  /** Field selection. Mutually exclusive with include() — Prisma throws if both select and include are set. */
   fields() {
-    const fields = (this.query.fields as string)?.split(",") || [];
-    if (fields.length > 0) {
-      this.prismaQuery.select = fields.reduce(
-        (acc: Record<string, boolean>, field) => {
-          acc[field] = true;
-          return acc;
-        },
-        {}
+    const fieldsParam = this.query.fields as string;
+    if (!fieldsParam) return this;
+
+    const fieldList = fieldsParam.split(",").filter(Boolean);
+    if (fieldList.length === 0) return this;
+
+    if (this.prismaQuery.include) {
+      throw new Error(
+        "QueryBuilder: cannot use `fields` selection together with `include` — Prisma does not allow `select` and `include` at the same level."
       );
     }
+
+    this.prismaQuery.select = fieldList.reduce(
+      (acc: Record<string, boolean>, field) => {
+        acc[field.trim()] = true;
+        return acc;
+      },
+      {}
+    );
+
     return this;
   }
 
-  // **Include Related Models*/
+  /** Include related models. Mutually exclusive with fields()/select. */
   include(includableFields: Record<string, boolean | object>) {
+    if (this.prismaQuery.select) {
+      throw new Error(
+        "QueryBuilder: cannot use `include` together with `fields` selection — Prisma does not allow `select` and `include` at the same level."
+      );
+    }
+
     this.prismaQuery.include = {
       ...this.prismaQuery.include,
       ...includableFields,
@@ -180,24 +256,40 @@ class QueryBuilder {
     return this;
   }
 
-  // **Execute Query*/
-  async execute() {
-    return this.model.findMany(this.prismaQuery);
+  /** Builds the final `where` clause by combining all accumulated conditions with AND (avoids silent key overwrites). */
+  private buildWhere() {
+    if (this.whereConditions.length === 0) return undefined;
+    if (this.whereConditions.length === 1) return this.whereConditions[0];
+    return { AND: this.whereConditions };
   }
 
-  // Count Total
-  async countTotal() {
-    const total = await this.model.count({ where: this.prismaQuery.where });
-    const page = Number(this.query.page) || 1;
-    const limit = Number(this.query.limit) || 10;
-    const totalPage = Math.ceil(total / limit);
-
+  private getFinalQuery() {
     return {
-      page,
-      limit,
-      total,
-      totalPage,
+      ...this.prismaQuery,
+      where: this.buildWhere(),
     };
+  }
+
+  /** Preview the final Prisma args without executing — useful for debugging/tests instead of console.log. */
+  debugQuery() {
+    return this.getFinalQuery();
+  }
+
+  async execute() {
+    return this.model.findMany(this.getFinalQuery());
+  }
+
+  async countTotal() {
+    const where = this.buildWhere();
+    const total = await this.model.count({ where });
+    const page = Math.max(1, Number(this.query.page) || 1);
+    const limit = Math.min(
+      Math.max(1, Number(this.query.limit) || DEFAULT_LIMIT),
+      this.maxLimit
+    );
+    const totalPage = Math.ceil(total / limit) || 1;
+
+    return { page, limit, total, totalPage };
   }
 }
 

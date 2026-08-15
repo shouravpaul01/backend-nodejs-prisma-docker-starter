@@ -17,7 +17,7 @@ const envSchema = z.object({
   // Stripe
   STRIPE_SECRET_KEY: z.string().min(1, "STRIPE_SECRET_KEY is required"),
   STRIPE_WEBHOOK_SECRET: z.string().min(1, "STRIPE_WEBHOOK_SECRET is required"),
- 
+
 
   // JWT
   JWT_SECRET: z.string().min(32, "JWT_SECRET must be at least 32 characters"),
@@ -45,21 +45,32 @@ const envSchema = z.object({
   AWS_S3_SECRET_KEY: z.string().min(1, "AWS_S3_SECRET_KEY is required"),
   AWS_S3_BUCKET: z.string().min(1, "AWS_S3_BUCKET is required"),
 
-  // DigitalOcean S3
-  // DO_SPACE_ENDPOINT: z.string().url("DO_SPACE_ENDPOINT must be a valid URL"),
-  // DO_SPACE_ACCESS_KEY: z.string().min(1, "DO_SPACE_ACCESS_KEY is required"),
-  // DO_SPACE_SECRET_KEY: z.string().min(1, "DO_SPACE_SECRET_KEY is required"),
-  // DO_SPACE_BUCKET: z.string().min(1, "DO_SPACE_BUCKET is required"),
+
+
+  // Admin Seed Data
+  ADMIN_NAME: z.string().min(1, "ADMIN_NAME is required"),
+  ADMIN_EMAIL: z.string().email("ADMIN_EMAIL must be a valid email address"),
+  ADMIN_PASSWORD: z.string().min(6, "ADMIN_PASSWORD must be at least 6 characters"),
 });
 
+// Export the inferred type so it can be used across the application
+export type EnvConfig = z.infer<typeof envSchema>;
+
 const validateEnv = envSchema.safeParse(process.env);
+
 if (!validateEnv.success) {
-  console.error("❌ Invalid environment variables:\n");
-  const errors = validateEnv.error.flatten().fieldErrors;
-  Object.entries(errors).forEach(([key, messages]) => {
-    console.error(`  ${key}: ${messages?.join(", ")}`);
-  });
-  console.error("\nServer startup aborted.");
-  process.exit(1);
+  console.error("❌ Invalid or missing environment variables detected:\n");
+
+  const fieldErrors = validateEnv.error.flatten().fieldErrors;
+  for (const [field, errors] of Object.entries(fieldErrors)) {
+    console.error(`   👉 ${field}: ${errors?.join(", ")}`);
+  }
+
+  console.error("\n🚨 Server startup aborted. Please check your .env file.");
+
+  // Throwing an Error is a better practice than process.exit(1) in a module.
+  // It allows test runners (like Jest) to catch the error instead of killing the entire test process.
+  throw new Error("Invalid environment variables");
 }
+
 export const env = validateEnv.data;

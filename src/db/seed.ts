@@ -1,6 +1,7 @@
 
 import bcrypt from "bcrypt";
 import prisma from "../shared/prisma";
+import { env } from "../config/env.config";
 
 
 
@@ -14,12 +15,12 @@ export const initiateSuperAdmin = async () => {
     return;
   }
 
-  const hashedPassword = await bcrypt.hash("admin123", 10);
+  const hashedPassword = await bcrypt.hash(env.ADMIN_PASSWORD, 10);
 
   const user = await prisma.user.create({
     data: {
-      name: "Super Admin",
-      email: "admin@example.com",
+      name: env.ADMIN_NAME,
+      email: env.ADMIN_EMAIL,
       role: "ADMIN",
     },
   });
