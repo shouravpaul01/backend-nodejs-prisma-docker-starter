@@ -1,6 +1,6 @@
 import { z } from "zod";
 import dotenv from "dotenv";
-import validateRequest from "../app/middlewares/validateRequest";
+
 
 dotenv.config();
 
@@ -17,8 +17,7 @@ const envSchema = z.object({
   // Stripe
   STRIPE_SECRET_KEY: z.string().min(1, "STRIPE_SECRET_KEY is required"),
   STRIPE_WEBHOOK_SECRET: z.string().min(1, "STRIPE_WEBHOOK_SECRET is required"),
-  // STRIPE_PUBLISHABLE_KEY: z.string().min(1, "STRIPE_PUBLISHABLE_KEY is required"),
-  // STRIPE_CLIENT_ID: z.string().min(1, "STRIPE_CLIENT_ID is required"),
+ 
 
   // JWT
   JWT_SECRET: z.string().min(32, "JWT_SECRET must be at least 32 characters"),

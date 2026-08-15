@@ -57,7 +57,7 @@ app.use(rateLimit(limiterOptions));
 app.get("/", (req: Request, res: Response) => {
   res.send(
     AppBodyTemplate({
-      message: "Welcome to  Project API 🚀",
+      message: "Welcome to  Project API 🚀sdfsgfsdfgsdfg",
       version: "1.0.1",
       status: "Active",
       repoUrl: "",
@@ -68,7 +68,7 @@ app.get("/", (req: Request, res: Response) => {
 });
 
 // app.use("/uploads", express.static(path.join("/var/www/uploads")));
-app.use("/uploads", express.static(path.join(process.cwd(), "uploads"))); 
+app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 // Setup API routes
 app.use("/api/v1", router);
 

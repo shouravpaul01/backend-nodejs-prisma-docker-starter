@@ -16,12 +16,18 @@ export const initiateSuperAdmin = async () => {
 
   const hashedPassword = await bcrypt.hash("admin123", 10);
 
-  await prisma.user.create({
+  const user = await prisma.user.create({
     data: {
       name: "Super Admin",
       email: "admin@example.com",
-      password: hashedPassword,
       role: "ADMIN",
+    },
+  });
+
+  await prisma.userAuth.create({
+    data: {
+      userId: user.id,
+      password: hashedPassword,
     },
   });
 
