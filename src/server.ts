@@ -1,7 +1,7 @@
 import { createServer } from "http";
 import app from "./app";
 
-import { initializeSocket } from "./helpers/socket";
+import { initializeSocket } from "./shared/socket";
 import redis from "./shared/redis";
 import { env } from "./config/env.config";
 const httpServer = createServer(app);
