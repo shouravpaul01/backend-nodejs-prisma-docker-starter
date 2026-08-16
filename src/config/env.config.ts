@@ -13,6 +13,8 @@ const envSchema = z.object({
   FRONTEND_URL: z.string().url("FRONTEND_URL must be a valid URL"),
   BACKEND_IMAGE_URL: z.string().url("BACKEND_IMAGE_URL must be a valid URL"),
   PORT: z.coerce.number().default(5000),
+  DATABASE_URL: z.string().url("DATABASE_URL must be a valid URL"),
+  REDIS_URL: z.string().default("redis://localhost:6379"),
 
   // Stripe
   STRIPE_SECRET_KEY: z.string().min(1, "STRIPE_SECRET_KEY is required"),
