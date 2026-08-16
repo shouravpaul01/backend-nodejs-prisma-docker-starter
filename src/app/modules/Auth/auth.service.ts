@@ -3,12 +3,13 @@ import jwt from "jsonwebtoken";
 import crypto from "crypto";
 import httpStatus from "http-status";
 import prisma from "../../../shared/prisma";
-import emailSender from "../../../helpers/emailSender";
+
 import ApiPathError from "../../../errors/ApiPathError";
 import redis from "../../../shared/redis";
 import { jwtHelpers } from "../../../helpers/jwtHelpers";
 import { env } from "../../../config/env.config";
 import { AuthUtils } from "./auth.utils";
+import { emailQueue } from "../../../services/Email/email.queue";
 
 
 // ── register ─────────────────────────────────────────
@@ -47,7 +48,7 @@ const register = async (payload: {
   const otp = generateOtp();
   await redis.set(`otp:register:${user.email}`, otp, "EX", 5 * 60);
 
-  await emailSender({
+  await emailQueue.add("sendEmail", {
     to: user.email,
     subject: "Your verification OTP",
     html: `Your OTP is ${otp}. It expires in 5 minutes.`,
@@ -76,7 +77,7 @@ const verifyOtp = async (payload: { email: string; otp: string }, res: any) => {
 
   await redis.del(`otp:register:${payload.email}`);
 
-  const tokens =AuthUtils.setTokenCookies(res, user.id, user.role);
+  const tokens = AuthUtils.setTokenCookies(res, user);
   return { user, ...tokens };
 };
 
@@ -131,7 +132,7 @@ const login = async (
   });
 
   const { auth, ...safeUser } = user;
-  const tokens = AuthUtils.setTokenCookies(res, user.id, user.role);
+  const tokens = AuthUtils.setTokenCookies(res, user);
   return { user: safeUser, ...tokens };
 };
 
@@ -149,7 +150,7 @@ const forgotPassword = async (payload: { email: string }) => {
   const otp = generateOtp();
   await redis.set(`otp:reset:${payload.email}`, otp, "EX", 10 * 60);
 
-  await emailSender({
+  await emailQueue.add("sendEmail", {
     to: payload.email,
     subject: "Password reset OTP",
     html: `Your password reset OTP is ${otp}. It expires in 10 minutes.`,
@@ -279,7 +280,7 @@ const refreshToken = async (token: string, res: any) => {
     );
   }
 
-  const tokens = AuthUtils.setTokenCookies(res, user.id, user.role);
+  const tokens = AuthUtils.setTokenCookies(res, user);
   return tokens;
 };
 
