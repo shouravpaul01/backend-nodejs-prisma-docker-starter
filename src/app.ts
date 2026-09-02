@@ -2,20 +2,26 @@ import express, { Application, NextFunction, Request, Response } from "express";
 import httpStatus from "http-status";
 import cors from "cors";
 import cookieParser from "cookie-parser";
+import compression from "compression";
+import helmet from "helmet";
+import hpp from "hpp";
 import path from "path";
-import bodyParser from "body-parser";
 import router from "./app/routes";
 import GlobalErrorHandler from "./app/middlewares/globalErrorHandler";
 import { AppBodyTemplate } from "./utils/BodyTemplate";
 import morgan from "morgan";
-import { rateLimit } from "express-rate-limit";
-import ApiError from "./errors/ApiErrors";
+import { globalTokenLimiter } from "./app/middlewares/tokenBucketLimiter";
 
 const app: Application = express();
 
-export const corsOptions = {
-  origin: ["http://localhost:3000"],
+// ─── CORS Configuration ──────────────────────────────────────────────────────
+// Origins are loaded from env so they work in both dev and production.
+const allowedOrigins = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(",").map((o) => o.trim())
+  : ["http://localhost:3000"];
 
+export const corsOptions = {
+  origin: allowedOrigins,
   methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
   allowedHeaders: [
     "Content-Type",
@@ -26,32 +32,31 @@ export const corsOptions = {
   ],
   credentials: true,
 };
-const limiterOptions = {
-  windowMs: 1 * 60 * 1000, // 1 minutes
-  limit: 30,
-  standardHeaders: "draft-8" as const,
-  legacyHeaders: false,
-  ipv6Subnet: 56,
-  handler: (req: Request, res: Response) => {
-    throw new ApiError(
-      httpStatus.TOO_MANY_REQUESTS,
-      "Too many requests from this IP. Please try again later.",
-    );
-  },
-};
-// Middleware setup
-app.use(cors(corsOptions));
-app.use(cookieParser());
-app.use(express.json());
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
-app.use(express.json({ limit: "20mb" }));
-app.use(express.static("public"));
-app.use(morgan("dev"));
 
-// Apply rate limiting to protect the API from abuse, brute-force attacks,
-// and excessive requests by limiting the number of requests per IP.
-app.use(rateLimit(limiterOptions));
+// ─── Security Middleware ──────────────────────────────────────────────────────
+// Order matters:
+// 1. helmet      — sets secure HTTP headers (XSS, clickjacking, HSTS, CSP, …)
+// 2. hpp         — sanitises HTTP Parameter Pollution (e.g. ?id=1&id=2)
+// 3. cors        — restricts cross-origin access to allowed origins only
+// 4. globalLimiter — coarse throttle for all IPs (30 req/min)
+//
+// Auth-specific stricter limits (authLimiter / otpLimiter) are applied
+// directly inside auth.routes.ts — see that file for per-route config.
+app.use(helmet());
+app.use(hpp());
+app.use(cors(corsOptions));
+app.use(globalTokenLimiter);
+
+// ─── General Middleware ───────────────────────────────────────────────────────
+// cookieParser uses a secret for signed-cookie integrity.
+app.use(cookieParser(process.env.COOKIE_SECRET || "changeme-in-production"));
+app.use(express.json({ limit: "1mb" }));           // single, size-limited JSON parser
+app.use(express.urlencoded({ extended: true, limit: "1mb" }));
+app.use(compression());                             // gzip responses
+app.use(express.static("public"));
+
+// Morgan: verbose in dev, minimal in production
+app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
 
 // Route handler for the root endpoint
 app.get("/", (req: Request, res: Response) => {
